@@ -13,7 +13,6 @@
     /* vw-coefficients for each layer's "bottom" gap, set by the script
        below. Each blends between its resting (tall-window) value and a
        small nested-stack value (short-window) as viewport height shrinks. */
-    --l5-vw: 20.83;
     --l4-vw: 8.23;
     --l3-vw: 3.33;
     --l2-vw: 0.16;
@@ -60,43 +59,53 @@
     pointer-events: none;
   }
 
-  /* Drifting weather clouds, populated by JS. Sits in the sky, behind
-     the mountain layers - separate from the fixed decorative clouds
-     baked into layer5/layer2's art. */
-  #cloud-layer {
+  /* Drifting weather clouds, populated by JS directly into .scene (not a
+     separate positioned wrapper) so each cloud's own z-index can be set
+     individually - normally behind every mountain layer, but in fog a
+     cloud may get a higher z-index to drift in front of layer2/3/4
+     (never layer1, see JS). Separate from the fixed decorative clouds
+     baked into layer2's art. */
+  /* .weather-cloud is the positioning/movement wrapper (drift animation
+     lives here); .weather-cloud-art is the actual image, flipped
+     independently of movement direction so "which way it's facing" and
+     "which way it's drifting" can vary separately. */
+  .weather-cloud {
     position: absolute;
-    inset: 0;
-    z-index: 1;
-    overflow: hidden;
+    height: auto;
+    z-index: 10;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
     pointer-events: none;
   }
 
-  .weather-cloud {
-    position: absolute;
-    width: 120px;
-    height: 40px;
-    background: rgba(255, 255, 255, 0.55);
-    border-radius: 50px;
-    filter: blur(1px);
-    animation-name: drift-cloud;
-    animation-timing-function: linear;
-    animation-iteration-count: infinite;
+  .weather-cloud-art {
+    width: 100%;
+    height: 100%;
+    background-size: contain;
+    background-repeat: no-repeat;
+    background-position: center;
   }
 
-  .weather-cloud::before,
-  .weather-cloud::after {
-    content: '';
-    position: absolute;
-    background: inherit;
-    border-radius: 50%;
+  .weather-cloud-art.flipped {
+    transform: scaleX(-1);
   }
 
-  .weather-cloud::before { width: 60px; height: 60px; top: -30px; left: 15px; }
-  .weather-cloud::after  { width: 45px; height: 45px; top: -20px; left: 65px; }
-
+  /* Two drift directions - JS assigns each cloud one or the other.
+     Both fade in/out over the first and last ~8% of the drift so clouds
+     never just pop into view at the screen edge; --cloud-opacity is the
+     per-instance target set by JS (depth/density variation). */
   @keyframes drift-cloud {
-    from { transform: translateX(-20vw) scale(var(--cloud-scale, 1)); }
-    to   { transform: translateX(120vw) scale(var(--cloud-scale, 1)); }
+    0%   { transform: translateX(-30vw); opacity: 0; }
+    8%   { opacity: var(--cloud-opacity, 0.5); }
+    92%  { opacity: var(--cloud-opacity, 0.5); }
+    100% { transform: translateX(130vw); opacity: 0; }
+  }
+
+  @keyframes drift-cloud-reverse {
+    0%   { transform: translateX(130vw); opacity: 0; }
+    8%   { opacity: var(--cloud-opacity, 0.5); }
+    92%  { opacity: var(--cloud-opacity, 0.5); }
+    100% { transform: translateX(-30vw); opacity: 0; }
   }
 
   /* Falling rain/snow, populated by JS. Overlays the entire page,
@@ -146,14 +155,15 @@
      paw tucked into the stack (logo behind layer3, paw behind layer1)
      instead of always floating on top.
      "bottom" gaps are proportional to viewport width (vw); the script
-     below adjusts each --lN-vw coefficient as the window gets short. */
-  #layer5       { bottom: calc(var(--l5-vw) * 1vw); z-index: 2; } /* distant clouds */
-  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 3; } /* skyline w/ clock tower */
-  #clemson-logo { z-index: 4; }                                   /* behind layer3 */
-  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 5; } /* mid mountains */
-  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 6; } /* near mountains + clouds */
-  #paw          { z-index: 7; }                                   /* behind layer1 */
-  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 8; } /* foreground ridge */
+     below adjusts each --lN-vw coefficient as the window gets short.
+     z-indexes are spaced out (steps of 10) so JS can slot fog clouds in
+     just above layer4/3/2 (see FOG_CLOUD_Z in the script). */
+  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 20; } /* skyline w/ clock tower */
+  #clemson-logo { z-index: 30; }                                   /* behind layer3 */
+  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 40; } /* mid mountains */
+  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 50; } /* near mountains + clouds */
+  #paw          { z-index: 60; }                                   /* behind layer1 */
+  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 70; } /* foreground ridge */
 
   .corner-mark {
     position: absolute;
@@ -238,8 +248,6 @@
 <body>
   <div class="scene">
     <div id="weather-overlay"></div>
-    <div id="cloud-layer"></div>
-    <img id="layer5" class="layer" src="resources/Footer_Layer5.png" alt="">
     <img id="layer4" class="layer" src="resources/Footer_Layer4.png" alt="">
     <img id="clemson-logo" class="corner-mark" src="resources/ClemsonUniversity_RGB__Orange.png" alt="Clemson University">
     <img id="layer3" class="layer" src="resources/Footer_Layer3.png" alt="">
@@ -270,20 +278,20 @@
     // we actually want (a fixed 1vw peek over the layer in front), via
     // offset = desiredTopEdge - ownHeight - which goes solidly negative
     // for the taller back layers, sinking them down behind the front one.
-    const OWN_HEIGHT_VW = { l1: 7.34, l2: 13.18, l3: 18.49, l4: 17.45, l5: 27.6 };
+    const OWN_HEIGHT_VW = { l1: 7.34, l2: 13.18, l3: 18.49, l4: 17.45 };
     const PEEK_VW = 1; // each layer's top edge peeks this far above the one just in front, chain built off layer1
 
-    // layer3/4/5 chain off layer1 exactly as before (1vw peek each step),
+    // layer3/4 chain off layer1 exactly as before (1vw peek each step),
     // regardless of where layer2 ends up - only layer2 itself moves.
     let topEdge = OWN_HEIGHT_VW.l1 + PEEK_VW; // reference point one peek above layer1
     const nestedOffsets = { l1: 0 };
-    for (const key of ['l3', 'l4', 'l5']) {
+    for (const key of ['l3', 'l4']) {
       topEdge += PEEK_VW;
       nestedOffsets[key] = topEdge - OWN_HEIGHT_VW[key];
     }
 
     // layer2 gets its own, smaller peek above layer1 so it tucks down
-    // lower, independent of the layer3/4/5 chain above.
+    // lower, independent of the layer3/4 chain above.
     const LAYER2_PEEK_VW = 0.2;
     nestedOffsets.l2 = (OWN_HEIGHT_VW.l1 + LAYER2_PEEK_VW) - OWN_HEIGHT_VW.l2;
 
@@ -294,7 +302,6 @@
       l2: { full: 0.16,  nested: nestedOffsets.l2 },
       l3: { full: 3.33,  nested: nestedOffsets.l3 },
       l4: { full: 8.23,  nested: nestedOffsets.l4 },
-      l5: { full: 20.83, nested: nestedOffsets.l5 },
     };
 
     function updateLayout() {
@@ -428,22 +435,49 @@
     };
 
     function clearWeatherFX() {
-      document.getElementById('cloud-layer').innerHTML = '';
+      document.querySelectorAll('.weather-cloud').forEach((el) => el.remove());
       document.getElementById('precip-layer').innerHTML = '';
     }
 
-    function spawnClouds(count, { top = [5, 45], scale = [0.6, 1.6], opacity = [0.3, 0.6], duration = [60, 110] } = {}) {
-      const layer = document.getElementById('cloud-layer');
+    // Two hand-drawn cloud silhouettes (resources/clouds/), alpha-boosted
+    // from the user's very-low-opacity source art so they actually read
+    // against the sky. Native aspect ratios, used to size each spawn.
+    const CLOUD_IMAGES = [
+      { src: 'resources/clouds/cloud1-fx.png', aspect: 263 / 72 },
+      { src: 'resources/clouds/cloud2-fx.png', aspect: 145 / 23 },
+    ];
+
+    // z-index a fog cloud can land on, each one tucked just above a
+    // different mountain layer (see the layer z-indexes above: layer4=20,
+    // layer3=40, layer2=50) - always below layer1 (70), so the closest
+    // ridge never disappears into the fog.
+    const FOG_CLOUD_Z = [21, 41, 51];
+
+    function spawnClouds(count, { top = [5, 45], width = [14, 26], opacity = [0.35, 0.7], duration = [60, 110], zIndex = [10], allowReverseDrift = true } = {}) {
+      // Clouds are appended directly into .scene (not a separate
+      // positioned wrapper) so each one's z-index is compared directly
+      // against the mountain layers, letting fog clouds interleave.
+      const scene = document.querySelector('.scene');
       for (let i = 0; i < count; i++) {
         const cloud = document.createElement('div');
         cloud.className = 'weather-cloud';
+        const art = document.createElement('div');
+        art.className = 'weather-cloud-art' + (Math.random() < 0.5 ? ' flipped' : '');
+        const img = CLOUD_IMAGES[Math.floor(Math.random() * CLOUD_IMAGES.length)];
+        art.style.backgroundImage = `url(${img.src})`;
+        cloud.appendChild(art);
+
+        const w = width[0] + Math.random() * (width[1] - width[0]);
         const d = duration[0] + Math.random() * (duration[1] - duration[0]);
+        cloud.style.aspectRatio = img.aspect;
+        cloud.style.width = `${w}vw`;
         cloud.style.top = `${top[0] + Math.random() * (top[1] - top[0])}vh`;
-        cloud.style.setProperty('--cloud-scale', (scale[0] + Math.random() * (scale[1] - scale[0])).toFixed(2));
-        cloud.style.opacity = (opacity[0] + Math.random() * (opacity[1] - opacity[0])).toFixed(2);
+        cloud.style.setProperty('--cloud-opacity', (opacity[0] + Math.random() * (opacity[1] - opacity[0])).toFixed(2));
+        cloud.style.animationName = (allowReverseDrift && Math.random() < 0.5) ? 'drift-cloud-reverse' : 'drift-cloud';
         cloud.style.animationDuration = `${d}s`;
         cloud.style.animationDelay = `${-Math.random() * d}s`;
-        layer.appendChild(cloud);
+        cloud.style.zIndex = zIndex[Math.floor(Math.random() * zIndex.length)];
+        scene.appendChild(cloud);
       }
     }
 
@@ -478,8 +512,8 @@
     function applyWeatherFX(category) {
       clearWeatherFX();
       switch (category) {
-        case 'cloudy': spawnClouds(6); break;
-        case 'fog':    spawnClouds(9, { top: [10, 55], scale: [1.4, 2.4], opacity: [0.3, 0.5], duration: [90, 150] }); break;
+        case 'cloudy': spawnClouds(6, { allowReverseDrift: false }); break;
+        case 'fog':    spawnClouds(9, { top: [10, 55], width: [28, 50], opacity: [0.25, 0.45], duration: [220, 340], zIndex: FOG_CLOUD_Z }); break;
         case 'rain':   spawnClouds(4); spawnRain(70); break;
         case 'storm':  spawnClouds(6, { opacity: [0.45, 0.7] }); spawnRain(130, { duration: [0.3, 0.5] }); break;
         case 'snow':   spawnClouds(4); spawnSnow(60); break;
