@@ -18,6 +18,8 @@
     --l3-vw: 3.33;
     --l2-vw: 0.16;
     --l1-vw: 0.47;
+    /* Set by the script below once weather data loads. */
+    --weather-tint: rgba(0, 0, 0, 0);
   }
 
   html, body {
@@ -46,18 +48,112 @@
     pointer-events: none;
   }
 
+  /* Weather wash sits above the sky gradient but below the mountain
+     layers, and transitions on its own faster timescale (the sky
+     gradient's 60s transition is meant for the slow day/night drift). */
+  #weather-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    background: var(--weather-tint);
+    transition: background 4s ease;
+    pointer-events: none;
+  }
+
+  /* Drifting weather clouds, populated by JS. Sits in the sky, behind
+     the mountain layers - separate from the fixed decorative clouds
+     baked into layer5/layer2's art. */
+  #cloud-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .weather-cloud {
+    position: absolute;
+    width: 120px;
+    height: 40px;
+    background: rgba(255, 255, 255, 0.55);
+    border-radius: 50px;
+    filter: blur(1px);
+    animation-name: drift-cloud;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+
+  .weather-cloud::before,
+  .weather-cloud::after {
+    content: '';
+    position: absolute;
+    background: inherit;
+    border-radius: 50%;
+  }
+
+  .weather-cloud::before { width: 60px; height: 60px; top: -30px; left: 15px; }
+  .weather-cloud::after  { width: 45px; height: 45px; top: -20px; left: 65px; }
+
+  @keyframes drift-cloud {
+    from { transform: translateX(-20vw) scale(var(--cloud-scale, 1)); }
+    to   { transform: translateX(120vw) scale(var(--cloud-scale, 1)); }
+  }
+
+  /* Falling rain/snow, populated by JS. Overlays the entire page,
+     including the UI, since precipitation reads as being in front of
+     everything - but never intercepts clicks. */
+  #precip-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .raindrop {
+    position: absolute;
+    top: -5vh;
+    width: 2px;
+    height: 18px;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.65));
+    animation-name: fall-rain;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes fall-rain {
+    from { transform: translateY(0); }
+    to   { transform: translateY(115vh); }
+  }
+
+  .snowflake {
+    position: absolute;
+    top: -5vh;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.85);
+    animation-name: fall-snow;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+  }
+
+  @keyframes fall-snow {
+    0%   { transform: translate(0, 0); }
+    50%  { transform: translate(3vw, 55vh); }
+    100% { transform: translate(-3vw, 115vh); }
+  }
+
   /* Depth-ordered footer layers, farthest to nearest, with the logo and
      paw tucked into the stack (logo behind layer3, paw behind layer1)
      instead of always floating on top.
      "bottom" gaps are proportional to viewport width (vw); the script
      below adjusts each --lN-vw coefficient as the window gets short. */
-  #layer5       { bottom: calc(var(--l5-vw) * 1vw); z-index: 1; } /* distant clouds */
-  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 2; } /* skyline w/ clock tower */
-  #clemson-logo { z-index: 3; }                                   /* behind layer3 */
-  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 4; } /* mid mountains */
-  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 5; } /* near mountains + clouds */
-  #paw          { z-index: 6; }                                   /* behind layer1 */
-  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 7; } /* foreground ridge */
+  #layer5       { bottom: calc(var(--l5-vw) * 1vw); z-index: 2; } /* distant clouds */
+  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 3; } /* skyline w/ clock tower */
+  #clemson-logo { z-index: 4; }                                   /* behind layer3 */
+  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 5; } /* mid mountains */
+  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 6; } /* near mountains + clouds */
+  #paw          { z-index: 7; }                                   /* behind layer1 */
+  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 8; } /* foreground ridge */
 
   .corner-mark {
     position: absolute;
@@ -112,22 +208,53 @@
     border-color: #F56600;
     background: rgba(255, 255, 255, 0.16);
   }
+
+  #weather-widget {
+    position: fixed;
+    top: 4vh;
+    right: 2.5vw;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    font-family: system-ui, sans-serif;
+    font-size: 1rem;
+    color: #fff;
+    white-space: nowrap;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 999px;
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    transition: opacity 0.6s ease;
+  }
+
+  #weather-widget.visible {
+    opacity: 1;
+  }
 </style>
 </head>
 <body>
   <div class="scene">
-    <img id="layer5" class="layer" src="Footer_Layer5.png" alt="">
-    <img id="layer4" class="layer" src="Footer_Layer4.png" alt="">
-    <img id="clemson-logo" class="corner-mark" src="ClemsonUniversity_RGB__Orange.png" alt="Clemson University">
-    <img id="layer3" class="layer" src="Footer_Layer3.png" alt="">
-    <img id="layer2" class="layer" src="Footer_Layer2.png" alt="">
-    <img id="paw" class="corner-mark" src="Paw_RGB__Orange.png" alt="Clemson Paw">
-    <img id="layer1" class="layer" src="Footer_Layer1.png" alt="">
+    <div id="weather-overlay"></div>
+    <div id="cloud-layer"></div>
+    <img id="layer5" class="layer" src="resources/Footer_Layer5.png" alt="">
+    <img id="layer4" class="layer" src="resources/Footer_Layer4.png" alt="">
+    <img id="clemson-logo" class="corner-mark" src="resources/ClemsonUniversity_RGB__Orange.png" alt="Clemson University">
+    <img id="layer3" class="layer" src="resources/Footer_Layer3.png" alt="">
+    <img id="layer2" class="layer" src="resources/Footer_Layer2.png" alt="">
+    <img id="paw" class="corner-mark" src="resources/Paw_RGB__Orange.png" alt="Clemson Paw">
+    <img id="layer1" class="layer" src="resources/Footer_Layer1.png" alt="">
   </div>
 
   <form id="search-form" action="https://www.google.com/search" autocomplete="off">
     <input id="search-input" type="text" name="q" placeholder="Search Google" autofocus>
   </form>
+
+  <div id="weather-widget"></div>
+
+  <div id="precip-layer"></div>
 
   <script>
     const SQUASH_REF_HEIGHT = 700;
@@ -257,10 +384,136 @@
 
     let SKY_KEYFRAMES = buildSkyKeyframes(6.5, 19); // sane default until real sunrise/sunset resolve
 
+    // WMO weather codes (used by Open-Meteo) -> label/icon/overlay category.
+    const WEATHER_CODES = {
+      0:  { label: 'Clear',            emojiDay: '☀️', emojiNight: '🌙', category: 'clear' },
+      1:  { label: 'Mostly Clear',     emojiDay: '🌤️', emojiNight: '🌙', category: 'clear' },
+      2:  { label: 'Partly Cloudy',    emojiDay: '⛅', emojiNight: '☁️', category: 'cloudy' },
+      3:  { label: 'Overcast',         emojiDay: '☁️', emojiNight: '☁️', category: 'cloudy' },
+      45: { label: 'Fog',              emojiDay: '🌫️', emojiNight: '🌫️', category: 'fog' },
+      48: { label: 'Fog',              emojiDay: '🌫️', emojiNight: '🌫️', category: 'fog' },
+      51: { label: 'Light Drizzle',    emojiDay: '🌦️', emojiNight: '🌧️', category: 'rain' },
+      53: { label: 'Drizzle',          emojiDay: '🌦️', emojiNight: '🌧️', category: 'rain' },
+      55: { label: 'Heavy Drizzle',    emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      56: { label: 'Freezing Drizzle', emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      57: { label: 'Freezing Drizzle', emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      61: { label: 'Light Rain',       emojiDay: '🌦️', emojiNight: '🌧️', category: 'rain' },
+      63: { label: 'Rain',             emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      65: { label: 'Heavy Rain',       emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      66: { label: 'Freezing Rain',    emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      67: { label: 'Freezing Rain',    emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      71: { label: 'Light Snow',       emojiDay: '🌨️', emojiNight: '🌨️', category: 'snow' },
+      73: { label: 'Snow',             emojiDay: '❄️', emojiNight: '❄️', category: 'snow' },
+      75: { label: 'Heavy Snow',       emojiDay: '❄️', emojiNight: '❄️', category: 'snow' },
+      77: { label: 'Snow Grains',      emojiDay: '❄️', emojiNight: '❄️', category: 'snow' },
+      80: { label: 'Rain Showers',     emojiDay: '🌦️', emojiNight: '🌧️', category: 'rain' },
+      81: { label: 'Rain Showers',     emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      82: { label: 'Heavy Showers',    emojiDay: '🌧️', emojiNight: '🌧️', category: 'rain' },
+      85: { label: 'Snow Showers',     emojiDay: '🌨️', emojiNight: '🌨️', category: 'snow' },
+      86: { label: 'Snow Showers',     emojiDay: '🌨️', emojiNight: '🌨️', category: 'snow' },
+      95: { label: 'Thunderstorm',     emojiDay: '⛈️', emojiNight: '⛈️', category: 'storm' },
+      96: { label: 'Thunderstorm',     emojiDay: '⛈️', emojiNight: '⛈️', category: 'storm' },
+      99: { label: 'Thunderstorm',     emojiDay: '⛈️', emojiNight: '⛈️', category: 'storm' },
+    };
+
+    // Translucent wash applied over the sky per weather category - kept
+    // light now that clouds/rain/snow do most of the visual work below.
+    const WEATHER_TINTS = {
+      clear:  'rgba(0, 0, 0, 0)',
+      cloudy: 'rgba(90, 95, 110, 0.18)',
+      fog:    'rgba(170, 175, 185, 0.4)',
+      rain:   'rgba(40, 50, 70, 0.3)',
+      snow:   'rgba(210, 215, 230, 0.15)',
+      storm:  'rgba(25, 25, 40, 0.4)',
+    };
+
+    function clearWeatherFX() {
+      document.getElementById('cloud-layer').innerHTML = '';
+      document.getElementById('precip-layer').innerHTML = '';
+    }
+
+    function spawnClouds(count, { top = [5, 45], scale = [0.6, 1.6], opacity = [0.3, 0.6], duration = [60, 110] } = {}) {
+      const layer = document.getElementById('cloud-layer');
+      for (let i = 0; i < count; i++) {
+        const cloud = document.createElement('div');
+        cloud.className = 'weather-cloud';
+        const d = duration[0] + Math.random() * (duration[1] - duration[0]);
+        cloud.style.top = `${top[0] + Math.random() * (top[1] - top[0])}vh`;
+        cloud.style.setProperty('--cloud-scale', (scale[0] + Math.random() * (scale[1] - scale[0])).toFixed(2));
+        cloud.style.opacity = (opacity[0] + Math.random() * (opacity[1] - opacity[0])).toFixed(2);
+        cloud.style.animationDuration = `${d}s`;
+        cloud.style.animationDelay = `${-Math.random() * d}s`;
+        layer.appendChild(cloud);
+      }
+    }
+
+    function spawnRain(count, { duration = [0.4, 0.8] } = {}) {
+      const layer = document.getElementById('precip-layer');
+      for (let i = 0; i < count; i++) {
+        const drop = document.createElement('div');
+        drop.className = 'raindrop';
+        const d = duration[0] + Math.random() * (duration[1] - duration[0]);
+        drop.style.left = `${Math.random() * 100}vw`;
+        drop.style.animationDuration = `${d}s`;
+        drop.style.animationDelay = `${-Math.random() * d}s`;
+        layer.appendChild(drop);
+      }
+    }
+
+    function spawnSnow(count) {
+      const layer = document.getElementById('precip-layer');
+      for (let i = 0; i < count; i++) {
+        const flake = document.createElement('div');
+        flake.className = 'snowflake';
+        const size = 2 + Math.random() * 4;
+        const d = 8 + Math.random() * 10;
+        flake.style.width = flake.style.height = `${size}px`;
+        flake.style.left = `${Math.random() * 100}vw`;
+        flake.style.animationDuration = `${d}s`;
+        flake.style.animationDelay = `${-Math.random() * d}s`;
+        layer.appendChild(flake);
+      }
+    }
+
+    function applyWeatherFX(category) {
+      clearWeatherFX();
+      switch (category) {
+        case 'cloudy': spawnClouds(6); break;
+        case 'fog':    spawnClouds(9, { top: [10, 55], scale: [1.4, 2.4], opacity: [0.3, 0.5], duration: [90, 150] }); break;
+        case 'rain':   spawnClouds(4); spawnRain(70); break;
+        case 'storm':  spawnClouds(6, { opacity: [0.45, 0.7] }); spawnRain(130, { duration: [0.3, 0.5] }); break;
+        case 'snow':   spawnClouds(4); spawnSnow(60); break;
+        // 'clear': nothing to spawn
+      }
+    }
+
+    async function updateWeather(lat, lng) {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
+          `&current=temperature_2m,weather_code,is_day&temperature_unit=fahrenheit&timezone=auto`;
+        const res = await fetch(url);
+        const { current } = await res.json();
+        const info = WEATHER_CODES[current.weather_code] ||
+          { label: 'Unknown', emojiDay: '🌡️', emojiNight: '🌡️', category: 'clear' };
+        const emoji = current.is_day ? info.emojiDay : info.emojiNight;
+
+        const widget = document.getElementById('weather-widget');
+        widget.textContent = `${emoji} ${Math.round(current.temperature_2m)}°F · ${info.label}`;
+        widget.classList.add('visible');
+        document.documentElement.style.setProperty('--weather-tint', WEATHER_TINTS[info.category]);
+        applyWeatherFX(info.category);
+      } catch (err) {
+        console.error('Weather fetch failed:', err);
+      }
+    }
+
     function applyLocation(lat, lng) {
       const { sunriseHour, sunsetHour } = getSunriseSunsetHours(new Date(), lat, lng);
       SKY_KEYFRAMES = buildSkyKeyframes(sunriseHour, sunsetHour);
       updateSky();
+
+      updateWeather(lat, lng);
+      setInterval(() => updateWeather(lat, lng), 30 * 60000); // refresh every 30 min
     }
 
     if (navigator.geolocation) {
