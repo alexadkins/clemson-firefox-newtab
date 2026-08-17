@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Clemson New Tab</title>
+<style>
+  :root {
+    --sky: #160E2F;
+    /* vw-coefficients for each layer's "bottom" gap, set by the script
+       below. Each blends between its resting (tall-window) value and a
+       small nested-stack value (short-window) as viewport height shrinks. */
+    --l5-vw: 20.83;
+    --l4-vw: 8.23;
+    --l3-vw: 3.33;
+    --l2-vw: 0.16;
+    --l1-vw: 0.47;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--sky);
+  }
+
+  .scene {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    background: var(--sky);
+  }
+
+  .scene img.layer {
+    position: absolute;
+    left: 0;
+    width: 100vw;
+    height: auto;
+    display: block;
+    pointer-events: none;
+  }
+
+  /* Depth-ordered footer layers, farthest to nearest, with the logo and
+     paw tucked into the stack (logo behind layer3, paw behind layer1)
+     instead of always floating on top.
+     "bottom" gaps are proportional to viewport width (vw); the script
+     below adjusts each --lN-vw coefficient as the window gets short. */
+  #layer5       { bottom: calc(var(--l5-vw) * 1vw); z-index: 1; } /* distant clouds */
+  #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 2; } /* skyline w/ clock tower */
+  #clemson-logo { z-index: 3; }                                   /* behind layer3 */
+  #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 4; } /* mid mountains */
+  #layer2       { bottom: calc(var(--l2-vw) * 1vw); z-index: 5; } /* near mountains + clouds */
+  #paw          { z-index: 6; }                                   /* behind layer1 */
+  #layer1       { bottom: calc(var(--l1-vw) * 1vw); z-index: 7; } /* foreground ridge */
+
+  .corner-mark {
+    position: absolute;
+    pointer-events: none;
+  }
+
+  #clemson-logo {
+    top: 4vh;
+    left: 2.4vw;
+    width: clamp(160px, 32vw, 620px);
+    height: auto;
+  }
+
+  #paw {
+    bottom: 5vh;
+    right: 2.5vw;
+    width: clamp(64px, 11vw, 210px);
+    height: auto;
+  }
+</style>
+</head>
+<body>
+  <div class="scene">
+    <img id="layer5" class="layer" src="Footer_Layer5.png" alt="">
+    <img id="layer4" class="layer" src="Footer_Layer4.png" alt="">
+    <img id="clemson-logo" class="corner-mark" src="ClemsonUniversity_RGB__Orange.png" alt="Clemson University">
+    <img id="layer3" class="layer" src="Footer_Layer3.png" alt="">
+    <img id="layer2" class="layer" src="Footer_Layer2.png" alt="">
+    <img id="paw" class="corner-mark" src="Paw_RGB__Orange.png" alt="Clemson Paw">
+    <img id="layer1" class="layer" src="Footer_Layer1.png" alt="">
+  </div>
+
+  <script>
+    const SQUASH_REF_HEIGHT = 700;
+
+    // Each layer's own rendered height (width:100vw; height:auto, so this
+    // is fixed regardless of window height) in vw at the 1920px reference,
+    // now that layers 1-4 are cropped tight to their content:
+    //   layer1: 141px -> 7.34vw   layer3: 355px -> 18.49vw
+    //   layer2: 253px -> 13.18vw  layer4: 335px -> 17.45vw
+    // That height totally dominates a sub-1vw "bottom" nudge, which is
+    // why small nested offsets barely moved anything visible. The nested
+    // target for each layer is instead solved backwards from the TOP edge
+    // we actually want (a fixed 1vw peek over the layer in front), via
+    // offset = desiredTopEdge - ownHeight - which goes solidly negative
+    // for the taller back layers, sinking them down behind the front one.
+    const OWN_HEIGHT_VW = { l1: 7.34, l2: 13.18, l3: 18.49, l4: 17.45, l5: 27.6 };
+    const PEEK_VW = 1; // each layer's top edge peeks this far above the one just in front, chain built off layer1
+
+    // layer3/4/5 chain off layer1 exactly as before (1vw peek each step),
+    // regardless of where layer2 ends up - only layer2 itself moves.
+    let topEdge = OWN_HEIGHT_VW.l1 + PEEK_VW; // reference point one peek above layer1
+    const nestedOffsets = { l1: 0 };
+    for (const key of ['l3', 'l4', 'l5']) {
+      topEdge += PEEK_VW;
+      nestedOffsets[key] = topEdge - OWN_HEIGHT_VW[key];
+    }
+
+    // layer2 gets its own, smaller peek above layer1 so it tucks down
+    // lower, independent of the layer3/4/5 chain above.
+    const LAYER2_PEEK_VW = 0.2;
+    nestedOffsets.l2 = (OWN_HEIGHT_VW.l1 + LAYER2_PEEK_VW) - OWN_HEIGHT_VW.l2;
+
+    // Resting (tall-window) vs. nested-stack (short-window) vw-coefficient
+    // for each layer's "bottom" gap.
+    const LAYERS = {
+      l1: { full: 0.47,  nested: nestedOffsets.l1 },
+      l2: { full: 0.16,  nested: nestedOffsets.l2 },
+      l3: { full: 3.33,  nested: nestedOffsets.l3 },
+      l4: { full: 8.23,  nested: nestedOffsets.l4 },
+      l5: { full: 20.83, nested: nestedOffsets.l5 },
+    };
+
+    function updateLayout() {
+      const ratio = Math.min(1, Math.max(0, window.innerHeight / SQUASH_REF_HEIGHT));
+      const t = ratio * ratio;
+      const root = document.documentElement.style;
+      for (const [key, { full, nested }] of Object.entries(LAYERS)) {
+        root.setProperty(`--${key}-vw`, nested + (full - nested) * t);
+      }
+    }
+
+    updateLayout();
+    window.addEventListener('resize', updateLayout);
+  </script>
+</body>
+</html>
