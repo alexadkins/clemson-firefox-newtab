@@ -38,6 +38,12 @@
     transition: background 60s linear;
   }
 
+  /* Swapped in during startTimeDemo() so rapid applyTime() calls actually
+     keep up visually instead of endlessly chasing a 60s-eased target. */
+  .scene.demo-fast-sky {
+    transition: background 0.15s linear;
+  }
+
   .scene img.layer {
     position: absolute;
     left: 0;
@@ -78,6 +84,11 @@
     pointer-events: none;
   }
 
+  /* Plain background-image, not mask-image - Firefox treats mask-image as
+     a CORS-checked resource and refuses it entirely under file://
+     ("CORS request not http"), which broke local testing. Differently
+     colored clouds (e.g. storm's purple) are pre-tinted PNG files instead
+     of a runtime recolor. */
   .weather-cloud-art {
     width: 100%;
     height: 100%;
@@ -156,8 +167,8 @@
      instead of always floating on top.
      "bottom" gaps are proportional to viewport width (vw); the script
      below adjusts each --lN-vw coefficient as the window gets short.
-     z-indexes are spaced out (steps of 10) so JS can slot fog clouds in
-     just above layer4/3/2 (see FOG_CLOUD_Z in the script). */
+     z-indexes are spaced out (steps of 10) so JS can slot fog/storm clouds
+     in just above layer4/3/2 (see INTERLEAVED_CLOUD_Z in the script). */
   #layer4       { bottom: calc(var(--l4-vw) * 1vw); z-index: 20; } /* skyline w/ clock tower */
   #clemson-logo { z-index: 30; }                                   /* behind layer3 */
   #layer3       { bottom: calc(var(--l3-vw) * 1vw); z-index: 40; } /* mid mountains */
@@ -447,13 +458,21 @@
       { src: 'resources/clouds/cloud2-fx.png', aspect: 145 / 23 },
     ];
 
-    // z-index a fog cloud can land on, each one tucked just above a
-    // different mountain layer (see the layer z-indexes above: layer4=20,
-    // layer3=40, layer2=50) - always below layer1 (70), so the closest
-    // ridge never disappears into the fog.
-    const FOG_CLOUD_Z = [21, 41, 51];
+    // Purple-gray pre-tinted variants for storm, generated the same way
+    // as the alpha boost above (same aspect ratios).
+    const STORM_CLOUD_IMAGES = [
+      { src: 'resources/clouds/cloud1-storm.png', aspect: 263 / 72 },
+      { src: 'resources/clouds/cloud2-storm.png', aspect: 145 / 23 },
+    ];
 
-    function spawnClouds(count, { top = [5, 45], width = [14, 26], opacity = [0.35, 0.7], duration = [60, 110], zIndex = [10], allowReverseDrift = true } = {}) {
+    // z-index a cloud can land on when it should be allowed to drift in
+    // front of the mountains (fog, storm), each value tucked just above a
+    // different layer (see the layer z-indexes above: layer4=20, layer3=40,
+    // layer2=50) - always below layer1 (70), so the closest ridge never
+    // disappears behind cloud cover.
+    const INTERLEAVED_CLOUD_Z = [21, 41, 51];
+
+    function spawnClouds(count, { top = [5, 45], width = [14, 26], opacity = [0.35, 0.7], duration = [60, 110], zIndex = [10], allowReverseDrift = true, images = CLOUD_IMAGES } = {}) {
       // Clouds are appended directly into .scene (not a separate
       // positioned wrapper) so each one's z-index is compared directly
       // against the mountain layers, letting fog clouds interleave.
@@ -463,7 +482,7 @@
         cloud.className = 'weather-cloud';
         const art = document.createElement('div');
         art.className = 'weather-cloud-art' + (Math.random() < 0.5 ? ' flipped' : '');
-        const img = CLOUD_IMAGES[Math.floor(Math.random() * CLOUD_IMAGES.length)];
+        const img = images[Math.floor(Math.random() * images.length)];
         art.style.backgroundImage = `url(${img.src})`;
         cloud.appendChild(art);
 
@@ -513,10 +532,10 @@
       clearWeatherFX();
       switch (category) {
         case 'cloudy': spawnClouds(6, { allowReverseDrift: false }); break;
-        case 'fog':    spawnClouds(9, { top: [10, 55], width: [28, 50], opacity: [0.25, 0.45], duration: [220, 340], zIndex: FOG_CLOUD_Z }); break;
-        case 'rain':   spawnClouds(4); spawnRain(70); break;
-        case 'storm':  spawnClouds(6, { opacity: [0.45, 0.7] }); spawnRain(130, { duration: [0.3, 0.5] }); break;
-        case 'snow':   spawnClouds(4); spawnSnow(60); break;
+        case 'fog':    spawnClouds(9, { top: [10, 55], width: [28, 50], opacity: [0.25, 0.45], duration: [220, 340], zIndex: INTERLEAVED_CLOUD_Z }); break;
+        case 'rain':   spawnClouds(4, { opacity: [0.45, 0.75], duration: [35, 55] }); spawnRain(70); break;
+        case 'storm':  spawnClouds(6, { opacity: [0.85, 1], width: [26, 46], duration: [50, 75], zIndex: INTERLEAVED_CLOUD_Z, images: STORM_CLOUD_IMAGES }); spawnRain(130, { duration: [0.3, 0.5] }); break;
+        case 'snow':   spawnClouds(4, { opacity: [0.4, 0.7], duration: [75, 115] }); spawnSnow(60); break;
         // 'clear': nothing to spawn
       }
     }
@@ -572,9 +591,57 @@
       return `rgb(${mixed.join(',')})`;
     }
 
+    // No override by default (real clock time is used); applyTime(hour)
+    // below lets you pin the sky to a specific hour for testing, the same
+    // way applyWeatherFX(category) previews a weather condition.
+    let timeOverrideHour = null;
+
+    function applyTime(hour) {
+      timeOverrideHour = hour;
+      updateSky();
+    }
+
+    function clearTimeOverride() {
+      timeOverrideHour = null;
+      updateSky();
+    }
+
+    // Demo mode: sweeps applyTime() through a full 24h cycle so you can
+    // watch the whole sky progression without waiting in real time.
+    // startTimeDemo({ cycleDurationSeconds: 20, loop: true }) is the
+    // default; call stopTimeDemo() to end it and return to the real clock.
+    let demoIntervalId = null;
+
+    function startTimeDemo({ cycleDurationSeconds = 20, loop = true } = {}) {
+      stopTimeDemo(); // clear any demo already running
+      document.querySelector('.scene').classList.add('demo-fast-sky');
+
+      const tickMs = 100;
+      const hourStep = 24 / ((cycleDurationSeconds * 1000) / tickMs);
+      let hour = 0;
+
+      demoIntervalId = setInterval(() => {
+        applyTime(hour);
+        hour += hourStep;
+        if (hour >= 24) {
+          if (loop) hour -= 24;
+          else stopTimeDemo();
+        }
+      }, tickMs);
+    }
+
+    function stopTimeDemo() {
+      if (demoIntervalId !== null) {
+        clearInterval(demoIntervalId);
+        demoIntervalId = null;
+      }
+      document.querySelector('.scene').classList.remove('demo-fast-sky');
+      clearTimeOverride();
+    }
+
     function updateSky() {
       const now = new Date();
-      const hour = now.getHours() + now.getMinutes() / 60;
+      const hour = timeOverrideHour ?? (now.getHours() + now.getMinutes() / 60);
 
       let prev = SKY_KEYFRAMES[0];
       let next = SKY_KEYFRAMES[SKY_KEYFRAMES.length - 1];
