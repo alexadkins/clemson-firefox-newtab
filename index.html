@@ -839,10 +839,15 @@
     let weatherSummary = '';
 
     function renderWeatherWidget() {
-      if (!weatherSummary) return; // nothing fetched yet
       const time = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const widget = document.getElementById('weather-widget');
-      widget.textContent = `${time} · ${weatherSummary}`;
+      // The clock needs no network at all, but the weather beside it waits
+      // on geolocation (up to the 5s timeout below) and then the Open-Meteo
+      // request. Show the time straight away and let the summary join it
+      // when it lands, rather than holding the whole widget back - an early
+      // return on an empty weatherSummary left the corner blank for what
+      // could be several seconds.
+      widget.textContent = weatherSummary ? `${time} · ${weatherSummary}` : time;
       widget.classList.add('visible');
     }
 
@@ -865,6 +870,9 @@
       }
     }
 
+    // Paint the clock now; the interval only ticks a minute from now, and
+    // the weather may take longer than that to arrive.
+    renderWeatherWidget();
     setInterval(renderWeatherWidget, 60000);
 
     function applyLocation(lat, lng) {
