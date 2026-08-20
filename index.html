@@ -267,6 +267,35 @@
     border-radius: 16px;
     backdrop-filter: blur(6px);
     box-sizing: border-box;
+    overflow-anchor: none;
+  }
+
+  /* On very narrow screens, stack the categories into one column with a
+     single shared scroll instead of side-by-side cards that each scroll
+     independently - NARROW_WIDTH_PX in the script below must match this
+     600px breakpoint. */
+  @media (max-width: 600px) {
+    #bookmarks-section {
+      flex-direction: column;
+      flex-wrap: nowrap;
+      align-items: stretch;
+      /* Not "center" (the base rule's value): when a flex container's
+         content overflows and justify-content centers it, the overflow
+         is split evenly above and below the box - but scrollTop can't go
+         negative, so whatever spills above the top edge becomes
+         permanently clipped and unreachable. flex-start keeps everything
+         anchored at the top, so overflow only ever happens at the
+         bottom, where scrolling can actually reach it. */
+      justify-content: flex-start;
+      overflow-y: auto;
+      overflow-anchor: none;
+      overflow-x: hidden;
+    }
+
+    .bookmark-category {
+      max-height: none !important;
+      overflow-y: visible !important;
+    }
   }
 
   .bookmark-category-title {
@@ -546,6 +575,7 @@
     const GAP_BELOW_SEARCH_BAR_PX = 24;
     const GAP_ABOVE_VIEWPORT_BOTTOM_PX = 16;
     const MIN_BOOKMARKS_HEIGHT_PX = 160;
+    const NARROW_WIDTH_PX = 600; // must match the media query breakpoint above
 
     function updateBookmarksVisibility() {
       const section = document.getElementById('bookmarks-section');
@@ -563,14 +593,31 @@
       }
 
       section.style.display = 'flex';
-      // Each category scrolls independently rather than the whole
-      // section sharing one scrollbar - a short column (e.g. Advising)
-      // shouldn't need to scroll just because a longer one (e.g. CPSC
-      // 1050) does.
-      section.querySelectorAll('.bookmark-category').forEach((column) => {
-        column.style.maxHeight = `${availableHeight}px`;
-        column.style.overflowY = 'auto';
-      });
+      const columns = section.querySelectorAll('.bookmark-category');
+
+      if (window.innerWidth <= NARROW_WIDTH_PX) {
+        // Stacked into one column (see the media query above) - a single
+        // shared scroll on the section itself, not per-category. Sized
+        // relative to the search bar's own measured width (rather than
+        // an independent clamp()) so it's guaranteed to stay narrower
+        // than it at any viewport size, not just where the two clamps
+        // happen to line up.
+        section.style.width = `${searchRect.width * 0.9}px`;
+        section.style.maxHeight = `${availableHeight}px`;
+        section.scrollTop = 0; // guard against scroll-anchoring nudging this once icons load async
+        columns.forEach((column) => { column.style.maxHeight = ''; });
+      } else {
+        // Side-by-side cards, each scrolling independently - a short
+        // column (e.g. Advising) shouldn't need to scroll just because a
+        // longer one (e.g. CPSC 1050) does.
+        section.style.width = '';
+        section.style.maxHeight = '';
+        columns.forEach((column) => {
+          column.style.maxHeight = `${availableHeight}px`;
+          column.style.overflowY = 'auto';
+          column.scrollTop = 0;
+        });
+      }
     }
 
     window.addEventListener('resize', updateBookmarksVisibility);
