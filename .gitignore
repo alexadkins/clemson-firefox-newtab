@@ -1,1 +1,15 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python (ad-hoc Pillow scripts for asset generation)
+__pycache__/
+*.pyc
+.venv/
