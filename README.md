@@ -2,7 +2,9 @@
 
 A fully custom Firefox "new tab" page: an animated Clemson-themed skyline
 wallpaper that reacts to window size, cycles sky color with real
-sunrise/sunset times, layers in live weather effects (Open-Meteo), and shows
+sunrise/sunset times, layers in live weather effects (Open-Meteo), shows the
+real night sky for your location after dark (the Yale Bright Star Catalogue,
+the moon at its true position and phase, the odd shooting star), and shows
 a small set of personal bookmark shortcuts you manage with an in-page editor.
 
 There's no build step and no dependencies — a small `index.html` shell plus
@@ -49,7 +51,8 @@ bar).
   short to fit them without colliding with the search box, and stack into
   a single scrollable column on narrow windows.
 - **In-page editing** — a settings gear opens a panel for search engine,
-  clock format, temperature unit, weather effects, and location (all
+  clock format, temperature unit, weather effects, night sky,
+  constellations (lines, optionally names), and location (all
   persisted to `localStorage`), plus a bookmark editor that adds, removes,
   and reorders links and saves them back to `bookmarks.json` through the
   bundled server.
@@ -432,6 +435,46 @@ so nothing stale can ever be cached. A few starting points:
 - **Mountain squash behavior** — `updateLayout()` and the `LAYERS` table.
 - **Weather effects** — `spawnClouds()`, `spawnRain()`, `spawnSnow()`,
   `applyWeatherFX()`, and the `CLOUD_IMAGES`/`STORM_CLOUD_IMAGES` arrays.
+- **Night sky** — the real sky over the user's location, appearing after
+  sunset (the `night` column of the sky keyframes) and hiding under cloud,
+  rain, fog and snow (`NIGHT_SKY_WEATHER`). The view faces south: due east
+  is the left edge, due west the right, and the horizon sits on the ridge
+  of the skyline layer, with a stereographic projection so constellations
+  keep their shapes (`projectSky()`, `skyFrame()`). Stars come from the
+  Yale Bright Star Catalogue to magnitude 5.5, packed into `STAR_CATALOG`
+  by `scripts/firefox-newtab-stars` (run it with `--mag` to change the
+  depth); a "Sky darkness" setting caps what is drawn at city, suburban
+  or dark-sky depth and scales the Milky Way, a band of soft blobs along
+  the galactic plane painted on a half-resolution canvas
+  (`MILKY_WAY_PROFILE`, `drawMilkyWay()`). The 128 stars with IAU proper
+  names show them on hover. Size, halo
+  and tint follow magnitude and colour index (`ensureNightSky()`,
+  `starColor()`). Constellation figures and names come from
+  d3-celestial's `constellations.lines.json` and `constellations.json`
+  (packed by the same script into `CONSTELLATION_LINES` and
+  `CONSTELLATION_NAMES`, drawn as one SVG path and label each; the
+  "Constellations" setting picks off, lines, or lines and names). The
+  five naked-eye planets are placed from JPL's approximate Keplerian
+  elements (`PLANETS`, `planetStates()`), sized by a rough magnitude,
+  named on hover (and beside the planet whenever constellation names are
+  on), and never twinkle. The moon is placed by a
+  low-precision ephemeris (`moonState()`), its phase drawn from the
+  true elongation (`moonPathD()`) and its lit limb turned to face the
+  sun (`moonLitBearing()`, so a low crescent tips into the smile); it
+  also shows faintly by day when it is up (`DAY_MOON_OPACITY`). Cloud cover from the weather fetch dims
+  the whole sky continuously (`weatherSkyFactor()`), and on the nights
+  of the major meteor showers (`METEOR_SHOWERS`) the streaks come more
+  often and radiate from the shower's radiant. From the console,
+  `applyTime(23)` shows tonight's sky at 11pm, `applyDate(new Date(2026,
+  11, 14, 23))` pins a whole date (a winter sky, the Geminids),
+  `startTimeDemo()` sweeps a whole night, and `applyMoonPhase(0.5)`
+  pins a full moon (`applyMoonPhase(null)` to release it).
+- **Smoke tests** — `scripts/firefox-newtab-smoke` stages the page,
+  serves it on a loopback port, loads a set of test pages (the real
+  shell with a pinned clock and assertions appended) in a headless
+  Firefox, and prints the assertions the pages post back, with a
+  screenshot of each in `/tmp/firefox-newtab-smoke`. Run it after any
+  change to the page; `-k name` runs a subset.
 - **Testing time-of-day changes quickly** — open the browser console and
   call `startTimeDemo()` to rapidly cycle through a full day (`stopTimeDemo()`
   to stop), instead of waiting for real time to pass.
