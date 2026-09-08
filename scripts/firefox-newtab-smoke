@@ -92,6 +92,11 @@ TESTS = {
       // clock. The field must exist exactly when the sky is dark.
       const now = new Date();
       const hour = now.getHours() + now.getMinutes() / 60;
+      // The first paint is held until the weather resolves, and the body runs
+      // long before that deadline - without settling, both halves of the check
+      // below would read false and it would pass saying nothing. What the hold
+      // itself does during a real load is what 'seed' and 'stale' are for.
+      settleFirstPaint();
       const built = !!document.getElementById('star-field');
       __smoke.report({
         'field built iff sky is dark': [built === (__smoke.opacity() > 0), `hour=${hour.toFixed(2)} night=${currentNight.toFixed(3)} opacity=${__smoke.opacity()} built=${built} tz=${Intl.DateTimeFormat().resolvedOptions().timeZone} sunset=${SKY_KEYFRAMES[6].hour.toFixed(2)} coords=${JSON.stringify(lastCoords)}`],
@@ -385,6 +390,138 @@ TESTS = {
         'sweep runtime (informational)': [true, `${frames} frames in ${elapsed}ms`],
       });
     """,
+    # Diagnostic: a cache too old to trust, whose reading the live fetch then
+    # contradicts. Seeding cannot help here - the cache itself is wrong.
+    'stale': {
+        'pre': r"""
+          const RealDate = Date;
+          const PINNED = new RealDate(2026, 8, 8, 23, 30, 0).getTime();
+          function PinnedDate(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(PINNED);
+          }
+          PinnedDate.prototype = RealDate.prototype;
+          PinnedDate.now = () => PINNED;
+          PinnedDate.parse = RealDate.parse;
+          PinnedDate.UTC = RealDate.UTC;
+          window.Date = PinnedDate;
+
+          // Twenty minutes old - past the 10 minute TTL - and it says the sky
+          // was clear. The key matches, so it is painted first, and then the
+          // fetch below goes out because it is stale.
+          const coords = { lat: 34.68, lng: -82.84 };
+          localStorage.setItem('newtab-location', JSON.stringify(coords));
+          localStorage.setItem('newtab-weather', JSON.stringify({
+            key: '34.68,-82.84,f', lat: coords.lat, lng: coords.lng,
+            ts: PINNED - 20 * 60000,
+            summary: 'test', category: 'clear', cloudCover: 0,
+          }));
+
+          // The sky actually clouded over since. Everything but Open-Meteo
+          // passes through, so the harness can still POST its report.
+          window.__fetchCalls = [];
+          const realFetch = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (!/open-meteo/.test(url)) return realFetch(input, init);
+            window.__fetchCalls.push(url.slice(0, 60));
+            return Promise.resolve(new Response(JSON.stringify({
+              current: { temperature_2m: 61, weather_code: 0, is_day: 0, cloud_cover: 85 },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          };
+
+          // --screenshot makes Firefox exit at load, so a fixed delay never
+          // fires. Report on the trailing edge of the writes instead: each one
+          // pushes the deadline back, and the last lands a tick after the
+          // stubbed fetch has settled.
+          window.__opacityWrites = [];
+          window.__sendReport = () => {
+            if (!window.__smoke || window.__smoke.reported) return;
+            const writes = window.__opacityWrites.slice();
+            const stepDown = writes.findIndex((v, i) => i > 0 && v < writes[i - 1]);
+            window.__smoke.report({
+              'star opacity never steps down during load': [stepDown === -1, JSON.stringify(writes)],
+              'the live fetch went out': [window.__fetchCalls.length > 0, `${window.__fetchCalls.length} call(s)`],
+              'no script errors': [window.__smoke.errors.length === 0, window.__smoke.errors.join('; ')],
+            });
+          };
+          const setProperty = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
+            if (prop === '--star-opacity') window.__opacityWrites.push(parseFloat(value));
+            return setProperty.call(this, prop, value, priority);
+          };
+
+          // Pump macrotasks until the writes go quiet - the awaited fetch and
+          // its json() need several ticks, and a fixed delay would either cut
+          // them off or outlive the screenshot.
+          let ticks = 0, lastLen = -1, stable = 0;
+          (function pump() {
+            if (!window.__smoke) { setTimeout(pump, 0); return; }
+            const len = window.__opacityWrites.length;
+            if (len === lastLen) stable++; else { stable = 0; lastLen = len; }
+            if ((stable >= 3 && len > 0) || ++ticks > 40) { window.__sendReport(); return; }
+            setTimeout(pump, 0);
+          })();
+        """,
+        'body': r"""
+          // The pre script's pump does the reporting; nothing to do here.
+        """,
+    },
+    # The hold's dangerous direction: if nothing ever resolves the weather, the
+    # sky must still appear rather than stay dark. Here the fetch fails, which
+    # is the path an offline machine takes.
+    'offline': {
+        'pre': r"""
+          const RealDate = Date;
+          const PINNED = new RealDate(2026, 8, 8, 23, 30, 0).getTime();
+          function PinnedDate(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(PINNED);
+          }
+          PinnedDate.prototype = RealDate.prototype;
+          PinnedDate.now = () => PINNED;
+          PinnedDate.parse = RealDate.parse;
+          PinnedDate.UTC = RealDate.UTC;
+          window.Date = PinnedDate;
+
+          // A known position but no weather cache at all, so updateWeather
+          // goes straight to the network - which is down.
+          localStorage.setItem('newtab-location', JSON.stringify({ lat: 34.68, lng: -82.84 }));
+          localStorage.removeItem('newtab-weather');
+          const realFetch = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (!/open-meteo/.test(url)) return realFetch(input, init);
+            return Promise.reject(new TypeError('NetworkError: offline'));
+          };
+
+          window.__opacityWrites = [];
+          window.__sendReport = () => {
+            if (!window.__smoke || window.__smoke.reported) return;
+            const writes = window.__opacityWrites.slice();
+            const stepDown = writes.findIndex((v, i) => i > 0 && v < writes[i - 1]);
+            window.__smoke.report({
+              'the sky is released even though nothing resolved': [writes.length > 0 && writes[writes.length - 1] > 0, JSON.stringify(writes)],
+              'the field was actually built': !!document.getElementById('star-field'),
+              'star opacity never steps down during load': [stepDown === -1, JSON.stringify(writes)],
+            });
+          };
+          const setProperty = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
+            if (prop === '--star-opacity') window.__opacityWrites.push(parseFloat(value));
+            return setProperty.call(this, prop, value, priority);
+          };
+          let ticks = 0, lastLen = -1, stable = 0;
+          (function pump() {
+            if (!window.__smoke) { setTimeout(pump, 0); return; }
+            const len = window.__opacityWrites.length;
+            if (len === lastLen) stable++; else { stable = 0; lastLen = len; }
+            if ((stable >= 3 && len > 0) || ++ticks > 40) { window.__sendReport(); return; }
+            setTimeout(pump, 0);
+          })();
+        """,
+        'body': r"""
+          // The pre script's pump does the reporting.
+        """,
+    },
     'demo': r"""
       startTimeDemo(); stopTimeDemo();
       const cleared = timeOverrideHour === null;

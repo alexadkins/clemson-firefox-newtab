@@ -681,8 +681,13 @@
       if (cached && cached.key === cacheKey) {
         // Paint a stale reading rather than nothing: a temperature a few
         // minutes old beats a widget that stays empty for half a second.
+        // Only a reading young enough to trust may settle the sky, though -
+        // a stale one is about to be contradicted by the fetch below, and
+        // letting it through is exactly the fade this hold exists to stop.
+        const fresh = Date.now() - cached.ts < WEATHER_TTL_MS;
+        if (fresh) settleFirstPaint(false);
         applyWeather(cached.summary, cached.category, cached.cloudCover);
-        if (Date.now() - cached.ts < WEATHER_TTL_MS) return;
+        if (fresh) return;
       }
       try {
         const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
@@ -695,6 +700,7 @@
         const emoji = current.is_day ? info.emojiDay : info.emojiNight;
 
         weatherSummary = `${emoji} ${Math.round(current.temperature_2m)}${celsius ? '°C' : '°F'} · ${info.label}`;
+        settleFirstPaint(false);
         applyWeather(weatherSummary, info.category, current.cloud_cover);
         writeWeatherCache({
           key: cacheKey,
@@ -708,6 +714,8 @@
           cloudCover: current.cloud_cover,
         });
       } catch (err) {
+        // No answer is coming; show the sky rather than hold it dark.
+        settleFirstPaint();
         console.error('Weather fetch failed:', err);
       }
     }
@@ -799,12 +807,14 @@
 
     function applyTime(hour) {
       timeOverrideHour = hour;
+      settleFirstPaint(false);
       updateSky();
     }
 
     function applyDate(date) {
       dateOverride = date;
       timeOverrideHour = date ? date.getHours() + date.getMinutes() / 60 : null;
+      settleFirstPaint(false);
       updateSky();
     }
 
@@ -1102,8 +1112,33 @@
     // the weather and to the night-sky setting.
     const DAY_MOON_OPACITY = 0.45;
 
+    // The first paint is held until the weather it depends on is known.
+    // --star-opacity and --moon-opacity are both transitioned over 4s, so a
+    // value written before the weather lands doesn't merely get corrected - it
+    // animates, and the sky visibly fades between the two. Everything that
+    // resolves the weather settles the hold: a cached reading young enough to
+    // trust, the fetch that follows a stale one, or a fetch that failed. The
+    // common case - a fresh cache entry - settles synchronously and costs
+    // nothing.
+    let firstPaintHeld = true;
+    // Nothing may leave the sky dark indefinitely. This only matters when no
+    // weather resolves at all (geolocation still pending, its own 5s timeout
+    // ahead of it), and it is long enough that a normal fetch beats it.
+    const FIRST_PAINT_HOLD_MS = 1200;
+    let firstPaintTimer = setTimeout(() => settleFirstPaint(), FIRST_PAINT_HOLD_MS);
+
+    // repaint is false when the caller is about to repaint anyway, so the sky
+    // gets laid out once rather than twice.
+    function settleFirstPaint(repaint = true) {
+      if (!firstPaintHeld) return;
+      firstPaintHeld = false;
+      clearTimeout(firstPaintTimer);
+      firstPaintTimer = null;
+      if (repaint) updateNightSky();
+    }
+
     function updateNightSky() {
-      const opacity = nightSkyOpacity();
+      const opacity = firstPaintHeld ? 0 : nightSkyOpacity();
       const root = document.documentElement.style;
       root.setProperty('--star-opacity', opacity.toFixed(3));
       if (opacity > 0) {
@@ -1118,7 +1153,7 @@
         starField.classList.add('dormant');
       }
 
-      const moonOpacity = loadSettings().nightSky === 'off'
+      const moonOpacity = firstPaintHeld || loadSettings().nightSky === 'off'
         ? 0 : Math.max(opacity, DAY_MOON_OPACITY * weatherSkyFactor());
       root.setProperty('--moon-opacity', moonOpacity.toFixed(3));
       if (moonOpacity > 0) {
