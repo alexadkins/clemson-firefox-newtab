@@ -577,6 +577,8 @@
     let weatherSummary = '';
     // Remembered so a weather-effects toggle can re-apply without another
     // fetch, and so the temperature-unit toggle knows what to re-request.
+    // Only the values used before any weather is known; seedWeatherFromCache()
+    // below replaces them with the last reading before the first paint.
     let lastWeatherCategory = 'clear';
     let lastCloudCover = null; // percent from the last fetch, null if unknown
     let lastCoords = null;
@@ -639,6 +641,24 @@
         /* caching is an optimisation; never let it break the widget */
       }
     }
+
+    // The star field transitions its opacity over 4s, and updateNightSky()
+    // scales that opacity by the weather. Without this the first paint runs
+    // with the 'clear'/null defaults above - factor 1.0, full brightness -
+    // and then applyWeather() lands a moment later with the real cloud
+    // cover, so the sky visibly fades back down after every new tab. Seeding
+    // from the cache makes the first target the right one and leaves a
+    // single clean fade-in. The cache is read unkeyed on purpose: an entry
+    // for a slightly different position or temperature unit still predicts
+    // the sky far better than assuming clear, and the fetch corrects it
+    // either way.
+    function seedWeatherFromCache() {
+      const cached = readWeatherCache();
+      if (!cached) return;
+      if (typeof cached.category === 'string') lastWeatherCategory = cached.category;
+      if (Number.isFinite(cached.cloudCover)) lastCloudCover = cached.cloudCover;
+    }
+    seedWeatherFromCache();
 
     function applyWeather(summary, category, cloudCover = null) {
       weatherSummary = summary;

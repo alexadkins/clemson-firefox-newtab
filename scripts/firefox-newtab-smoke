@@ -82,8 +82,10 @@ PRELUDE = r"""
 })();
 """
 
-# Each test is the script that runs after the prelude. A check is a
-# boolean, or [boolean, detail] when the detail is worth printing.
+# Each test is the script that runs after the prelude - or a
+# {'pre': ..., 'body': ...} dict when it also needs a script before app.js.
+# A check is a boolean, or [boolean, detail] when the detail is worth
+# printing.
 TESTS = {
     'load': r"""
       // Nothing pinned: the state the page reached on its own with the real
@@ -173,6 +175,99 @@ TESTS = {
         'settings on restores it': (saveSettings({ nightSky: 'on' }), updateNightSky(), __smoke.opacity() === 1),
       });
     """,
+    # The star field's opacity is transitioned over 4s, so a first paint that
+    # targets the wrong value doesn't just snap - it visibly fades. This is the
+    # one test that needs to watch the load itself.
+    'seed': {
+        'pre': r"""
+          // Pin the clock to the middle of a night at the seeded position.
+          // Without this the load under test happens by day, every opacity
+          // write is 0, and there is no fade to catch. Argument forms stay
+          // real - only "now" moves - and the shared prototype keeps
+          // `instanceof Date` working.
+          const RealDate = Date;
+          const PINNED = new RealDate(2026, 8, 8, 23, 30, 0).getTime();
+          function PinnedDate(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(PINNED);
+          }
+          PinnedDate.prototype = RealDate.prototype;
+          PinnedDate.now = () => PINNED;
+          PinnedDate.parse = RealDate.parse;
+          PinnedDate.UTC = RealDate.UTC;
+          window.Date = PinnedDate;
+
+          // A fresh load whose last reading was heavy cloud. The cache key
+          // matches what updateWeather() computes for the seeded position
+          // (default units are Fahrenheit) and the timestamp is the pinned
+          // "now", so the entry is applied and no network request is made.
+          const coords = { lat: 34.68, lng: -82.84 };
+          localStorage.setItem('newtab-location', JSON.stringify(coords));
+          localStorage.setItem('newtab-weather', JSON.stringify({
+            key: '34.68,-82.84,f', lat: coords.lat, lng: coords.lng, ts: PINNED,
+            summary: 'test', category: 'cloudy', cloudCover: 80,
+          }));
+          // Every --star-opacity write during load, in order. The fade-out bug
+          // shows up here as a step DOWN: full brightness on the first paint,
+          // then the weather-dimmed value once the cached reading lands.
+          window.__opacityWrites = [];
+          const setProperty = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
+            if (prop === '--star-opacity') window.__opacityWrites.push(parseFloat(value));
+            return setProperty.call(this, prop, value, priority);
+          };
+        """,
+        'body': r"""
+          // Snapshot first: everything below writes the property too, and the
+          // recorder is still live.
+          const writes = window.__opacityWrites.slice();
+          const stepDown = writes.findIndex((v, i) => i > 0 && v < writes[i - 1]);
+          const loadMax = Math.max(0, ...writes);
+          // By day every write is 0 and there is nothing to see; the checks are
+          // still valid, just vacuous, so report which case actually ran.
+          const dark = loadMax > 0;
+          // Precondition for the two checks above: the cached reading really
+          // was the one in play during load. True with or without the fix -
+          // what the fix changes is whether it arrived before the first paint.
+          const appliedAtLoad = lastCloudCover;
+
+          // The seeding on its own, which holds whatever the clock says: with
+          // the pre-seed defaults restored the sky reads full, and adopting the
+          // cached reading is what brings it down to the value it settles on.
+          applyTime(23);
+          writeWeatherCache({ key: 'x', ts: Date.now(), summary: 'test', category: 'cloudy', cloudCover: 80 });
+          lastWeatherCategory = 'clear'; lastCloudCover = null;
+          updateNightSky();
+          const unseeded = __smoke.opacity();
+          seedWeatherFromCache();
+          updateNightSky();
+          const seeded = __smoke.opacity();
+
+          // An entry from before cloudCover was stored must not be read as 0%.
+          lastCloudCover = null;
+          writeWeatherCache({ key: 'x', ts: Date.now(), summary: 'test', category: 'cloudy' });
+          seedWeatherFromCache();
+          const legacy = lastCloudCover;
+
+          // And no cache at all leaves the defaults untouched.
+          localStorage.removeItem('newtab-weather');
+          lastWeatherCategory = 'clear'; lastCloudCover = null;
+          seedWeatherFromCache();
+          const bare = lastWeatherCategory === 'clear' && lastCloudCover === null;
+
+          applyWeather('test', 'clear'); // leave the screenshot un-dimmed
+          __smoke.report({
+            'the cached reading was the one in play': [appliedAtLoad === 80, `lastCloudCover=${appliedAtLoad}`],
+            'the pinned clock put the load after dark': [dark, `peak load opacity=${loadMax}`],
+            'star opacity never steps down during load': [stepDown === -1, `${dark ? 'after dark' : 'daylight, vacuous'}: ${JSON.stringify(writes)}`],
+            'the load never targeted an undimmed sky': [loadMax < 0.4, `${dark ? 'after dark' : 'daylight, vacuous'}: max=${loadMax} (80% cover caps it at 0.356)`],
+            'unseeded defaults read as a clear sky': [unseeded === 1, unseeded],
+            'seeding adopts the cached cover': [seeded === 0.356, seeded],
+            'a cache without a cover figure leaves it unknown': legacy === null,
+            'no cache is a no-op': bare,
+            'no script errors': [__smoke.errors.length === 0, __smoke.errors.join('; ')],
+          });
+        """,
+    },
     'demo': r"""
       startTimeDemo(); stopTimeDemo();
       const cleared = timeOverrideHour === null;
@@ -314,9 +409,14 @@ def write_page(root, staging, name, script):
     tag = '<script src="app.js"></script>'
     if tag not in html:
         sys.exit('index.html no longer loads app.js the way this harness expects')
+    # A dict-shaped test also gets a 'pre' script, injected BEFORE app.js -
+    # the only way to seed storage or hook an API for the page's own load,
+    # which a body running after it has already missed.
+    pre, body = (script.get('pre', ''), script['body']) if isinstance(script, dict) else ('', script)
     prelude = PRELUDE.replace('__SMOKE_NAME__', json.dumps(name))
-    appended = f'<script>{prelude}</script><script>{script}</script>'
-    (staging / f'{name}.html').write_text(html.replace(tag, tag + appended), encoding='utf-8')
+    appended = f'<script>{prelude}</script><script>{body}</script>'
+    injected = (f'<script>{pre}</script>' if pre else '') + tag + appended
+    (staging / f'{name}.html').write_text(html.replace(tag, injected), encoding='utf-8')
 
 
 def run_firefox(firefox, profile, url, png, timeout):
