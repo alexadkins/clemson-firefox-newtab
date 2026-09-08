@@ -268,6 +268,123 @@ TESTS = {
           });
         """,
     },
+    # Every hour of the day against every weather condition, in one load.
+    # Screenshots only ever show a handful of moments; this is for the values
+    # that go wrong somewhere in the middle of the space.
+    'sweep': r"""
+      const t0 = performance.now();
+      const root = document.documentElement;
+      const num = (v) => parseFloat(getComputedStyle(root).getPropertyValue(v));
+      const bad = [];
+      const note = (what, where) => { if (bad.length < 8) bad.push(`${what} @ ${where}`); };
+
+      // Cover only changes anything for the two categories with a non-zero
+      // fixed factor; fog/rain/snow/storm hide the sky whatever the figure.
+      const CONDITIONS = [];
+      for (const cover of [null, 0, 25, 50, 75, 100]) {
+        CONDITIONS.push({ cat: 'clear', cover }, { cat: 'cloudy', cover });
+      }
+      for (const cat of ['fog', 'rain', 'snow', 'storm']) CONDITIONS.push({ cat, cover: null });
+
+      function checkFrame(where) {
+        const star = num('--star-opacity');
+        const moon = num('--moon-opacity');
+        if (!(Number.isFinite(star) && star >= 0 && star <= 1)) note(`star opacity ${star}`, where);
+        if (!(Number.isFinite(moon) && moon >= 0 && moon <= 1)) note(`moon opacity ${moon}`, where);
+        // The moon is never dimmer than the stars sharing its sky.
+        if (Number.isFinite(star) && Number.isFinite(moon) && moon < star - 1e-9) note(`moon ${moon} < star ${star}`, where);
+        for (const v of ['--sky-zenith', '--sky-horizon']) {
+          const c = getComputedStyle(root).getPropertyValue(v).trim();
+          if (!/^rgba?\(/.test(c) || /NaN/.test(c)) note(`${v} = ${c}`, where);
+        }
+        const field = document.getElementById('star-field');
+        if (star === 0 && field && !field.classList.contains('dormant')) note('field awake at zero opacity', where);
+        if (star > 0 && (!field || field.classList.contains('dormant'))) note('field dormant while lit', where);
+        if (star === 0) return;
+        for (const path of document.querySelectorAll('#constellation-lines path')) {
+          if (/NaN|Infinity/.test(path.getAttribute('d') || '')) { note('NaN in a figure path', where); break; }
+        }
+        for (const label of document.querySelectorAll('#constellation-lines text')) {
+          if (label.style.display === 'none') continue;
+          if (!Number.isFinite(parseFloat(label.getAttribute('x'))) ||
+              !Number.isFinite(parseFloat(label.getAttribute('y')))) { note('NaN label position', where); break; }
+        }
+        // Sampled: 1600 stars every step would dominate the run, and they all
+        // come off the same place() as the figures above.
+        const stars = document.querySelectorAll('.star:not([hidden])');
+        for (let i = 0; i < stars.length; i += 97) {
+          if (!Number.isFinite(parseFloat(stars[i].style.left)) ||
+              !Number.isFinite(parseFloat(stars[i].style.top))) { note('NaN star position', where); break; }
+        }
+        const moonEl = document.getElementById('moon');
+        if (moonEl && !moonEl.hidden) {
+          for (const v of ['--moon-x', '--moon-y', '--moon-tilt']) {
+            if (!Number.isFinite(parseFloat(moonEl.style.getPropertyValue(v)))) note(`moon ${v} not finite`, where);
+          }
+        }
+      }
+
+      // Pass 1: the whole matrix, quarter-hour resolution.
+      for (const { cat, cover } of CONDITIONS) {
+        applyWeather('sweep', cat, cover);
+        for (let h = 0; h < 24; h += 0.25) {
+          applyTime(h);
+          checkFrame(`${cat}/${cover}/${h.toFixed(2)}h`);
+        }
+      }
+      const matrixBad = bad.length;
+      const frames = CONDITIONS.length * 96;
+
+      // Pass 2: continuity. Two-minute steps under a fixed sky, so the only
+      // thing moving is the hour and any jump is the sky model itself. The
+      // steepest legitimate ramp is dawn - 1.5h of keyframe, smoothstepped,
+      // so at most ~0.034 per step.
+      let maxJump = 0, maxJumpAt = 'nowhere';
+      // One condition is enough: the weather factor is constant within a run,
+      // so a cloudier sky is the same curve scaled down.
+      for (const { cat, cover } of [{ cat: 'clear', cover: null }]) {
+        applyWeather('sweep', cat, cover);
+        let prev = null;
+        for (let h = 0; h <= 24.0001; h += 2 / 60) {
+          applyTime(Math.min(h, 24));
+          const star = num('--star-opacity');
+          if (prev !== null && Math.abs(star - prev) > maxJump) {
+            maxJump = Math.abs(star - prev);
+            maxJumpAt = `${cat}/${cover}/${h.toFixed(2)}h`;
+          }
+          prev = star;
+        }
+      }
+
+      // Pass 3: the fade this file was built around, across the matrix. For
+      // each condition compare what a cold load targets with only the cache to
+      // go on against what it settles on once applyWeather lands. Equal means
+      // one clean fade-in; brighter-then-dimmer is the fade-out bug.
+      let worstDrop = 0, worstAt = 'nowhere';
+      for (const { cat, cover } of CONDITIONS) {
+        for (const h of [0, 3, 6, 9, 12, 15, 18, 21, 23]) {
+          applyWeather('sweep', cat, cover);
+          applyTime(h);
+          const settled = num('--star-opacity');
+          writeWeatherCache({ key: 'x', ts: Date.now(), summary: 's', category: cat, cloudCover: cover });
+          lastWeatherCategory = 'clear'; lastCloudCover = null; // a cold start
+          seedWeatherFromCache();
+          updateNightSky();
+          const drop = num('--star-opacity') - settled;
+          if (drop > worstDrop) { worstDrop = drop; worstAt = `${cat}/${cover}/${h}h`; }
+        }
+      }
+
+      const elapsed = Math.round(performance.now() - t0);
+      applyWeather('test', 'clear'); applyTime(23); // a normal night for the screenshot
+      __smoke.report({
+        'every hour x condition produced sane values': [matrixBad === 0, bad.slice(0, 8).join(' | ') || `${frames} frames clean`],
+        'the sky never jumps between adjacent minutes': [maxJump < 0.06, `max step=${maxJump.toFixed(4)} at ${maxJumpAt}`],
+        'no condition paints brighter than it settles': [worstDrop <= 1e-9, `worst=${worstDrop.toFixed(4)} at ${worstAt}`],
+        'no script errors across the sweep': [__smoke.errors.length === 0, __smoke.errors.slice(0, 3).join('; ')],
+        'sweep runtime (informational)': [true, `${frames} frames in ${elapsed}ms`],
+      });
+    """,
     'demo': r"""
       startTimeDemo(); stopTimeDemo();
       const cleared = timeOverrideHour === null;
