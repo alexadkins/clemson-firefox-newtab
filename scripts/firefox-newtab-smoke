@@ -522,6 +522,165 @@ TESTS = {
           // The pre script's pump does the reporting.
         """,
     },
+    # The hold's deadline. Real time cannot be waited out here - --screenshot
+    # exits the browser at load - so the long timers are captured as they are
+    # armed and fired by hand. That tests our callback, not the platform's
+    # clock, which is the part worth testing.
+    'deadline': {
+        'pre': r"""
+          const RealDate = Date;
+          const PINNED = new RealDate(2026, 8, 8, 23, 30, 0).getTime();
+          function PinnedDate(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(PINNED);
+          }
+          PinnedDate.prototype = RealDate.prototype;
+          PinnedDate.now = () => PINNED;
+          PinnedDate.parse = RealDate.parse;
+          PinnedDate.UTC = RealDate.UTC;
+          window.Date = PinnedDate;
+
+          // Long timers are captured rather than scheduled. Short ones - the
+          // pump below, the page's own - run normally.
+          window.__longTimers = [];
+          const realSetTimeout = window.setTimeout.bind(window);
+          window.setTimeout = (fn, ms, ...rest) => {
+            if (ms >= 1000) { window.__longTimers.push({ ms, fn }); return -1; }
+            return realSetTimeout(fn, ms, ...rest);
+          };
+
+          // A known position, no weather cache, and a fetch that never
+          // settles: nothing will resolve the weather on its own.
+          localStorage.setItem('newtab-location', JSON.stringify({ lat: 34.68, lng: -82.84 }));
+          localStorage.removeItem('newtab-weather');
+          const realFetch = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (!/open-meteo/.test(url)) return realFetch(input, init);
+            return new Promise(() => {});
+          };
+
+          window.__opacityWrites = [];
+          const setProperty = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
+            if (prop === '--star-opacity') window.__opacityWrites.push(parseFloat(value));
+            return setProperty.call(this, prop, value, priority);
+          };
+
+          // Two phases: let the held state settle, fire the deadline, then let
+          // the release settle. Firing it builds the entire star field, which
+          // is far too much work to do inside the report call itself.
+        """,
+        'body': r"""
+          // No pump. By the time this runs the hold is already in force, and
+          // firing the captured timer is synchronous - so the whole check fits
+          // in one turn, with nothing left to race the browser's exit. An
+          // earlier version drove it from a setTimeout chain and never got a
+          // report out in time.
+          const held = window.__opacityWrites.slice();
+          const fieldWhileHeld = !!document.getElementById('star-field');
+          const armed = window.__longTimers.map((t) => t.ms);
+          const deadline = window.__longTimers.find((t) => t.ms === 1200);
+          if (deadline) deadline.fn();
+          const after = window.__opacityWrites.slice(held.length);
+          __smoke.report({
+            'a hold deadline was armed at 1200ms': [!!deadline, `armed: ${JSON.stringify(armed)}`],
+            'the sky stays dark while nothing resolves': [held.length > 0 && held.every((v) => v === 0) && !fieldWhileHeld, JSON.stringify(held)],
+            'the deadline releases it': [after.length > 0 && after[after.length - 1] > 0, JSON.stringify(after)],
+            'and the field gets built': !!document.getElementById('star-field'),
+            'no script errors': [__smoke.errors.length === 0, __smoke.errors.join('; ')],
+          });
+        """,
+    },
+    # Geolocation landing after the first paint, with a position far enough
+    # west to move the sky. The value is allowed to change - the sky really is
+    # different there - but it must not spend 4s fading to it.
+    'geo': {
+        'pre': r"""
+          const RealDate = Date;
+          // Mid-dusk at the seeded position: night is part way up its ramp, so
+          // a position change moves it rather than landing on the same 0 or 1.
+          const PINNED = new RealDate(2026, 8, 8, 20, 50, 0).getTime();
+          function PinnedDate(...args) {
+            return args.length ? new RealDate(...args) : new RealDate(PINNED);
+          }
+          PinnedDate.prototype = RealDate.prototype;
+          PinnedDate.now = () => PINNED;
+          PinnedDate.parse = RealDate.parse;
+          PinnedDate.UTC = RealDate.UTC;
+          window.Date = PinnedDate;
+
+          window.__longTimers = [];
+          const realSetTimeout = window.setTimeout.bind(window);
+          window.setTimeout = (fn, ms, ...rest) => {
+            if (ms >= 1000) { window.__longTimers.push({ ms, fn }); return -1; }
+            return realSetTimeout(fn, ms, ...rest);
+          };
+
+          // Seeded from cache at Clemson, with a fresh reading so the hold
+          // settles at once and there is a real painted value to disturb.
+          const coords = { lat: 34.68, lng: -82.84 };
+          localStorage.setItem('newtab-location', JSON.stringify(coords));
+          localStorage.setItem('newtab-weather', JSON.stringify({
+            key: '34.68,-82.84,f', lat: coords.lat, lng: coords.lng, ts: PINNED,
+            summary: 'test', category: 'clear', cloudCover: 0,
+          }));
+
+          // Then geolocation answers with a position three time zones west,
+          // where the sun has not set yet.
+          navigator.geolocation.getCurrentPosition = (success) => {
+            realSetTimeout(() => success({ coords: { latitude: 34.68, longitude: -120 } }), 0);
+          };
+
+          const realFetch = window.fetch.bind(window);
+          window.fetch = (input, init) => {
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (!/open-meteo/.test(url)) return realFetch(input, init);
+            return Promise.resolve(new Response(JSON.stringify({
+              current: { temperature_2m: 61, weather_code: 0, is_day: 0, cloud_cover: 0 },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+          };
+
+          window.__opacityWrites = [];
+          const setProperty = CSSStyleDeclaration.prototype.setProperty;
+          CSSStyleDeclaration.prototype.setProperty = function (prop, value, priority) {
+            if (prop === '--star-opacity') window.__opacityWrites.push(parseFloat(value));
+            return setProperty.call(this, prop, value, priority);
+          };
+
+          const fade = () => {
+            const f = document.getElementById('star-field');
+            return f ? getComputedStyle(f).transitionDuration : 'no field';
+          };
+          window.__sendReport = () => {
+            if (!window.__smoke || window.__smoke.reported) return;
+            const writes = window.__opacityWrites.slice();
+            const settlingClass = document.documentElement.classList.contains('sky-settling');
+            const fadeWhileSettling = fade();
+            const settle = window.__longTimers.find((t) => t.ms === 5000);
+            if (settle) settle.fn();
+            window.__smoke.report({
+              'the late position really moved the sky': [
+                Math.max(...writes) > 0 && writes[writes.length - 1] !== Math.max(...writes),
+                JSON.stringify(writes)],
+              'a settling window was armed at 5000ms': [!!settle, JSON.stringify(window.__longTimers.map((t) => t.ms))],
+              'the page was still settling when it landed': settlingClass,
+              'so the correction did not animate': [fadeWhileSettling === '0s', fadeWhileSettling],
+              'and the fade comes back afterwards': [fade() === '4s', fade()],
+            });
+          };
+          let ticks = 0, lastLen = -1, stable = 0;
+          (function pump() {
+            if (!window.__smoke) { realSetTimeout(pump, 0); return; }
+            const len = window.__opacityWrites.length;
+            if (len === lastLen) stable++; else { stable = 0; lastLen = len; }
+            if ((stable >= 6 && len > 0) || ++ticks > 60) { window.__sendReport(); return; }
+            realSetTimeout(pump, 0);
+          })();
+        """,
+        'body': r"""
+          // The pre script's pump does the reporting.
+        """,
+    },
     'demo': r"""
       startTimeDemo(); stopTimeDemo();
       const cleared = timeOverrideHour === null;

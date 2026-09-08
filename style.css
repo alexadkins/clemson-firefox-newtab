@@ -326,6 +326,17 @@
     transition-duration: 0.15s;
   }
 
+  /* Corrections that land while the page is still settling - the weather
+     resolving, geolocation replacing the seeded position - are not changes
+     anyone asked to watch, and a 4s fade between two guesses reads as the
+     sky dying. They apply instantly; only drift once the page has settled
+     gets the fade. Placed after the demo rule, which it ties with on
+     specificity, so a demo started inside the window still snaps. */
+  :root.sky-settling #star-field,
+  :root.sky-settling #moon {
+    transition-duration: 0s;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .star.twinkle { animation: none; }
   }

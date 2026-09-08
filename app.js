@@ -1120,6 +1120,15 @@
     // trust, the fetch that follows a stale one, or a fetch that failed. The
     // common case - a fresh cache entry - settles synchronously and costs
     // nothing.
+    // The hold above keeps a wrong value from being written at all. This is
+    // the backstop for every correction it cannot cover - geolocation
+    // replacing the seeded position, a unit change, a fetch that lands after
+    // the deadline: for the first seconds of a page, opacity changes apply
+    // without the 4s transition, so a correction snaps instead of fading.
+    const SKY_SETTLING_MS = 5000;
+    document.documentElement.classList.add('sky-settling');
+    setTimeout(() => document.documentElement.classList.remove('sky-settling'), SKY_SETTLING_MS);
+
     let firstPaintHeld = true;
     // Nothing may leave the sky dark indefinitely. This only matters when no
     // weather resolves at all (geolocation still pending, its own 5s timeout
